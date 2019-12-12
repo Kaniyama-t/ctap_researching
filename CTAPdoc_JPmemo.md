@@ -1,4 +1,5 @@
 > 本ファイルは、fido alliance様が公開なさっている"Client to Authenticator Protocol (CTAP) Proposed Standard, January 30, 2019"を勝手に自己解釈しているものです。信ぴょう性はありません。ご了承ください。
+> また、本記事内での斜線は
 > 正しい情報は以下リンクよりご参照ください、
 
 src: https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html
@@ -132,3 +133,170 @@ CMD(Command識別子)は、続いて送られる継続パケットと区別す�
 # 8.1.7 プロトコルバージョンと互換性
 
 CTAP HIDプロトコルはbackwardsの互換性を維持しながら、適当な範囲で拡張する余地のあるようデザインされています。 ~~おり、拡張は適当です(???)。~~ これはCTAPHIDホストが、特定のバージョン独自の仕様を含むすべてのバージョンをサポートすることが望ましいことを意味します。
+
+# 8.1.8 HIDデバイスの実施
+
+　この説明は、USBとHIDの独自定義についてであり、CTAPHIDデバイスを追加するための基礎的な供給に関して説明されています(意訳)。USBを追加するための ~~方法~~ 手順はいくつか存在し、本章ではそのうちの1つ、デバイスを１つないし複数のデバイスとみなさせる「インターフェイス」部を紹介します。(異なるやり方は本ドキュメントの範囲外です)
+
+## 8.1.8.1 インターフェイスとエンドポイントに関する説明
+
+　CTAPHIDのUSBデバイスは、control-endpoint=0を除き２つのエンドポイントを持ち、片方がIN、もう一方がOUT転送です。それらのパケットのサイズはベンダーが定義しますが、本章では、一般的なUSB full-speedで64-bytesのエンドポイントで進めます。
+
+### [def] インターフェイスの説明
+
+|        名前        |  値  |          説明           |
+| :----------------: | :--: | :---------------------: |
+|   bNumEndpoints    |  2   | IN / OUT エンドポイント |
+|  bInterfaceClass   | 0x03 |           HID           |
+| bInterfaceSubClass | 0x00 |  No interface subclass  |
+| bInterfaceProtocol | 0x00 |  No interface protocol  |
+
+### [def] OUTエンドポイント(1)の説明
+
+|       名前       |  値  |         説明          |
+| :--------------: | :--: | :-------------------: |
+|   bmAttributes   | 0x03 |       通信中断        |
+| bEndpointAdresss | 0x01 |         1=OUT         |
+|  bMaxPacketSize  |  64  | 最大 64-byte パケット |
+|    bInterval     |  5   |   毎 5 ミリ秒ポスト   |
+
+### [def] INエンドポイント(2)の説明
+
+|       名前       |  値  |         説明          |
+| :--------------: | :--: | :-------------------: |
+|   bmAttributes   | 0x03 |       通信中断        |
+| bEndpointAdresss | 0x81 |         1=IN          |
+|  bMaxPacketSize  |  64  | 最大 64-byte パケット |
+|    bInterval     |  5   |   毎 5 ミリ秒ポスト   |
+
+　実際のエンドポイントの順序、インターバル間隔、エンドポイント番号並びパケットのサイズは、恐らくベンダーが自由に定義しており、ホストアプリケーションは、これらのベンダー定義を要求し、これらの値に従って利用されます。わかりやすくするため、本章では上記リストの値を例として使います。
+
+## 8.1.8.2 HIDレポートの記述子とデバイスの検知
+
+　HIDレポートの記述子は、すべてのHIDデバイスで要求されますが、レポートと関連情報(scope, range, などなど)はOSの観点からはほとんど意味がありません。**CTAPHIDは、基本的にINおよびOUTエンドポイントに直接マッピングされる2つの「生の」レポートを提供します。** ~~CTAPHiDは、要はINとOUTの地図を直接作成したただ2つの生レポートを供給する。~~ しかしながら、HIDレポート記述子は、デバイスの検知に使われるという、CTAPHIDにおけつ１つに重要な意味を持つ。
+
+　分かりやすくするため、高レベルなC言語での抽象定義を記します。
+
+```c
+// HID report descriptor
+
+const uint8_t HID_ReportDescriptor[] = {
+  HID_UsagePage ( FIDO_USAGE_PAGE ),
+  HID_Usage ( FIDO_USAGE_CTAPHID ),
+  HID_Collection ( HID_Application ),
+  HID_Usage ( FIDO_USAGE_DATA_IN ),
+  HID_LogicalMin ( 0 ),
+  HID_LogicalMaxS ( 0xff ),
+  HID_ReportSize ( 8 ),
+  HID_ReportCount ( HID_INPUT_REPORT_BYTES ),
+  HID_Input ( HID_Data | HID_Absolute | HID_Variable ),
+  HID_Usage ( FIDO_USAGE_DATA_OUT ),
+  HID_LogicalMin ( 0 ),
+  HID_LogicalMaxS ( 0xff ),
+  HID_ReportSize ( 8 ),
+  HID_ReportCount ( HID_OUTPUT_REPORT_BYTES ),
+  HID_Output ( HID_Data | HID_Absolute | HID_Variable ),
+HID_EndCollection
+};
+```
+
+　ユニークな使い方ページは、FIDO allianceとその領域の為、0xF1D0として定義されています。CTAPHIDデバイスの検知中は、当時システムにいるすべてのHIDデバイスが調査され、この使い方ページ**と使用に一致するデバイスは、**その時の使い方がCTAPHIDデバイスとみなされます。
+
+　`HID_INPUT_REPORT_BYTES`と`HID_OUTPUT_REPORT_BYTES`に定義される長さの値は、一般的にエンドポイント記述子に定義誰ているそれぞれのエンドポイントのサイズと一致します。
+
+# 8.1.9 CTAPHIDコマンド
+
+CTAPHIDプロトコルには次のコマンドが含まれています。
+
+## 8.1.9.1 必須コマンド
+
+　次のリストに、CTAPHIDとして最低限必要なコマンドを記します。オプショナル、ないしベンダー独自定義のコマンドは、このドキュメントのセクションを尊敬して記述し追加できます。
+
+### 8.1.9.1.1 CTAPHID_MSG(0x03)
+
+動作：デバイスにCTAP1/U2Fメッセージをカプセル化して送信
+
+**Request**
+
+| CMD      | CTAPHID_MSG      |
+| -------- | ---------------- |
+| BCNT     | 1..(n + 1)       |
+| DATA     | U2F command byte |
+| DATA + 1 | n bytes of data  |
+
+**Response at success**
+
+| CMD      | CTAPHID_MSG     |
+| -------- | --------------- |
+| BCNT     | 1..(n + 1)      |
+| DATA     | U2F status code |
+| DATA + 1 | n bytes of data |
+
+---
+
+### 8.1.9.1.2 CTAPHID_CBOR(0x10)
+
+動作：CTAP CBOR をエンコードしたメッセージをカプセル化して送信　
+
+　　　このdata classの意味は、CTAP メッセージをエンコードすることが定義される。レスポンスメッセ―ジが返される前に、キープアライブメッセージがデバイスからクライアントに送信される(多分)ことをメモっておきましょう。
+
+**Request**
+
+| CMD      | CTAPHID_CBOR                 |
+| -------- | ---------------------------- |
+| BCNT     | 1..(n + 1)                   |
+| DATA     | CTAP command byte            |
+| DATA + 1 | n bytes of CBOR encoded data |
+
+**Response at success**
+
+| CMD      | CTAPHID_CBOR                 |
+| -------- | ---------------------------- |
+| BCNT     | 1..(n + 1)                   |
+| DATA     | CTAP status code             |
+| DATA + 1 | n bytes of CBOR encoded data |
+
+---
+
+### 8.1.9.1.3 CTAPHID_INIT (0x06)
+
+動作：①割り当てられたCIDを送った場合
+　　　　チャンネルと同期し，現在のTransaction, Buffer, stateを可能な限り早く破棄。破棄後すぐ新しいtransactionを準備する。**デバイスは、INITを受信したチャネルのCIDを使用して、そのチャネルを使用して応答します。** ~~デバイスは、INITで受け取り~~
+
+　　　②ブロードキャストのCIDを送った場合、デバイスは、要求したアプリケーションが動いている間使用できる32bitのユニークなチャンネルID(CID)を割り当てるよう要求する。このリクエストを送ったアプリケーションは、レスポンスに、レスポンスを照合するnonceを生成します。レスポンスが受け取られたとき、アプリケーションは受け取ったものと送ったものを比較し、その後、合致していたらチャンネルID(CID)を保存し次のtransaction以降使用するようになります。
+　　　　新規チャンネルに割り当てる**には**~~こと~~、~~そのリクエストをする~~**要求側**アプリケーションはブロードキャストチャンネル(CID:0xFFFFFFFF)を使う可能性が高いです。**デバイスは、ブロードキャストチャネルを使用して、応答で新しく割り当てられたチャネルで応答します。**~~そのデバイスは、新しい割り当てられたIDを返信した時、このブロードキャストチャンネルを使用します。~~
+
+**Request**
+
+| CMD  | CTAPHID_INIT |
+| ---- | ------------ |
+| BCNT | 8            |
+| DATA | 8-byte nonce |
+
+**Response at success**
+
+| CMD     | CTAPHID_INIT                        |
+| ------- | ----------------------------------- |
+| BCNT    | 17 (see note below)                 |
+| DATA    | 8-byte nonce                        |
+| DATA+8  | 4-byte channel ID                   |
+| DATA+12 | CTAPHID protocol version identifier |
+| DATA+13 | Major device version number         |
+| DATA+14 | Minor device version number         |
+| DATA+15 | Build device version number         |
+| DATA+16 | Capabilities flags                  |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
